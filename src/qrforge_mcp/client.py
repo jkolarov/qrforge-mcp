@@ -38,27 +38,34 @@ def resolve_token() -> str:
     """Return the API token from the request header (hosted) or env (local)."""
     headers: dict[str, str] = {}
     try:
-        # `authorization` is excluded from get_http_headers() by default; opt it in
-        # so the hosted server can forward the caller's token to the API.
-        headers = get_http_headers(include={"authorization"}) or {}
+        # `authorization` is excluded from get_http_headers() by default; opt it in.
+        # Also read X-QRForge-Token: some proxies (notably Cloudflare) strip the
+        # Authorization header, so a custom header is the reliable hosted path.
+        headers = get_http_headers(include={"authorization", "x-qrforge-token"}) or {}
     except Exception:
         headers = {}
-    # Header keys are normalised to lowercase by Starlette, but be defensive.
+
+    # Custom token header (survives proxies that strip Authorization).
+    custom = (headers.get("x-qrforge-token") or "").strip()
+    if custom:
+        return custom
+
+    # Standard Authorization: Bearer <token> (local/direct or proxies that keep it).
     auth = headers.get("authorization") or headers.get("Authorization") or ""
     if auth.lower().startswith("bearer "):
         token = auth[7:].strip()
         if token:
             return token
 
+    # Local (stdio) mode: environment variable.
     token = (os.environ.get("QRFORGE_API_TOKEN") or "").strip()
     if token:
         return token
 
     raise ToolError(
-        "No QR Forge API token found. For local use, set the QRFORGE_API_TOKEN "
-        "environment variable. For the hosted server, send "
-        "'Authorization: Bearer <token>'. Create a token at "
-        "https://qrforge.work/api/keys."
+        "No QR Forge API token found. Local: set QRFORGE_API_TOKEN. Hosted: send "
+        "'X-QRForge-Token: <token>' (or 'Authorization: Bearer <token>'). Create a "
+        "token at https://qrforge.work/api/keys."
     )
 
 

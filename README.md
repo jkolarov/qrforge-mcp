@@ -44,16 +44,20 @@ Environment variables:
 
 ### 2. Hosted — connect to our server, no install
 
-The hosted server runs at **`https://mcp.qrforge.work/mcp/`**. Pass your token as a
-header (supported by Claude Code and SDK clients):
+The hosted server runs at **`https://mcp.qrforge.work/mcp/`**. Pass your token in the
+`X-QRForge-Token` header:
 
 ```bash
 claude mcp add --transport http qrforge https://mcp.qrforge.work/mcp/ \
-  --header "Authorization: Bearer your-token-here"
+  --header "X-QRForge-Token: your-token-here"
 ```
 
-The hosted server is stateless and multi-user: it forwards each request's
-`Authorization` header to the API and never stores tokens.
+> The hosted server sits behind Cloudflare, which strips the `Authorization` header
+> on streaming requests — so use **`X-QRForge-Token`** for the hosted endpoint.
+> (`Authorization: Bearer <token>` still works for local/self-hosted instances.)
+
+The hosted server is stateless and multi-user: it forwards each request's token to
+the API and never stores it.
 
 ## Tools
 

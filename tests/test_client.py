@@ -24,6 +24,14 @@ def test_resolve_token_prefers_header(monkeypatch):
     assert client.resolve_token() == "hdr-token"
 
 
+def test_resolve_token_custom_header_wins(monkeypatch):
+    # X-QRForge-Token survives proxies that strip Authorization (e.g. Cloudflare).
+    monkeypatch.delenv("QRFORGE_API_TOKEN", raising=False)
+    monkeypatch.setattr(client, "get_http_headers",
+                        lambda **_: {"x-qrforge-token": "custom-token"})
+    assert client.resolve_token() == "custom-token"
+
+
 def test_resolve_token_falls_back_to_env(monkeypatch):
     monkeypatch.setenv("QRFORGE_API_TOKEN", "env-token")
     monkeypatch.setattr(client, "get_http_headers", lambda **_: {})
