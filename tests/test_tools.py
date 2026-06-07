@@ -48,6 +48,7 @@ async def test_list_qrcodes_sends_filters():
 async def test_create_url_puts_style_at_top_level():
     route = respx.post(f"{API}/qrcodes").mock(
         return_value=httpx.Response(201, json={"id": 1, "type": "url"}))
+    respx.get(url__regex=r".+/qr\.png").mock(return_value=httpx.Response(200, content=b"\x89PNG\r\n"))
     await _call("create_url_qrcode", {
         "target_url": "https://example.com", "name": "X", "static": True,
         "style": {"module_drawer": "circle", "fill_color": "#ff0000"},
@@ -81,6 +82,7 @@ async def test_update_nests_style():
 async def test_create_wifi_body():
     route = respx.post(f"{API}/qrcodes").mock(
         return_value=httpx.Response(201, json={"id": 2, "type": "wifi"}))
+    respx.get(url__regex=r".+/qr\.png").mock(return_value=httpx.Response(200, content=b"\x89PNG\r\n"))
     await _call("create_wifi_qrcode", {"ssid": "Net", "auth": "WPA", "password": "p"})
     import json as _json
     sent = _json.loads(route.calls[0].request.content)
@@ -92,6 +94,7 @@ async def test_create_wifi_body():
 async def test_create_file_qrcode_multipart():
     route = respx.post(f"{API}/qrcodes").mock(
         return_value=httpx.Response(201, json={"id": 3, "type": "pdf"}))
+    respx.get(url__regex=r".+/qr\.png").mock(return_value=httpx.Response(200, content=b"\x89PNG\r\n"))
     await _call("create_file_qrcode", {
         "file_base64": base64.b64encode(b"PK\x03\x04").decode(),
         "filename": "sheet.xlsx", "name": "Sheet",
@@ -100,6 +103,24 @@ async def test_create_file_qrcode_multipart():
     assert req.headers["content-type"].startswith("multipart/form-data")
     body = req.content
     assert b"sheet.xlsx" in body and b'name="pdf_file"' in body and b"pdf" in body
+
+
+@respx.mock
+async def test_create_returns_inline_image_and_clean_metadata():
+    respx.post(f"{API}/qrcodes").mock(return_value=httpx.Response(201, json={
+        "id": 9, "type": "url", "public_url": "https://qrforge.work/d/abc",
+        "links": {"qr_png": "/api/v1/qrcodes/9/qr.png"},
+        "target": {"kind": "url", "url": "https://x.io", "download_url": "/api/v1/qrcodes/9/file"},
+    }))
+    respx.get(url__regex=r".+/qr\.png").mock(
+        return_value=httpx.Response(200, content=b"\x89PNG\r\nDATA"))
+    res = await _call("create_url_qrcode", {"target_url": "https://x.io"})
+    # an image content block is returned for the client to display
+    assert any(getattr(b, "type", "") == "image" for b in res.content)
+    # structured metadata is clean: no auth-gated api links surfaced
+    assert res.data["id"] == 9 and res.data["public_url"] == "https://qrforge.work/d/abc"
+    assert "links" not in res.data
+    assert "download_url" not in res.data["target"]
 
 
 @respx.mock

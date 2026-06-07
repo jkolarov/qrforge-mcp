@@ -9,7 +9,9 @@ from typing import Annotated, Any
 
 from fastmcp import FastMCP
 from fastmcp.exceptions import ToolError
+from fastmcp.tools.tool import ToolResult
 from fastmcp.utilities.types import Image
+from mcp.types import TextContent
 from pydantic import Field
 
 from . import client
@@ -31,6 +33,49 @@ Style = Annotated[dict | None, Field(
     description="Optional QR style: module_drawer, fill_type, fill_color, "
                 "fill_color_2, back_color.",
 )]
+
+# Fields surfaced to the user/model. We drop the raw API `links` and the
+# `download_url` (auth-gated /api/v1 paths) so the model never hands the user a
+# URL that 401s — image/file access goes through the dedicated tools instead.
+_PRESENT_FIELDS = (
+    "id", "name", "type", "public_id", "public_url", "is_active", "is_expired",
+    "expires_at", "total_scans", "has_logo", "style", "target",
+)
+
+
+def present(doc: dict) -> dict:
+    """Trim a QR document to user-facing fields (no internal API links)."""
+    out = {k: doc.get(k) for k in _PRESENT_FIELDS if doc.get(k) is not None}
+    target = out.get("target")
+    if isinstance(target, dict):
+        out["target"] = {k: v for k, v in target.items() if k != "download_url"}
+    return out
+
+
+def _render_png(doc_id: int) -> bytes | None:
+    """Best-effort: render the saved QR as PNG. Never fails the calling tool."""
+    try:
+        return client.request("GET", f"/qrcodes/{doc_id}/qr.png",
+                               params={"size": 10}, expect="bytes")
+    except Exception:
+        return None
+
+
+def _qr_result(doc: dict, note: str) -> ToolResult:
+    """Return the QR image inline (for the client to display) plus clean metadata
+    the model can reason over. The image is also re-fetchable via get_qrcode_png."""
+    summary = present(doc)
+    blocks: list = []
+    png = _render_png(doc["id"])
+    if png is not None:
+        blocks.append(Image(data=png, format="png").to_image_content())
+    public = doc.get("public_url")
+    text = (f"{note} QR code #{doc['id']} (type={doc.get('type')})."
+            + (f" Encoded/public link: {public}." if public else "")
+            + " The QR image is attached above; call get_qrcode_png(id="
+            f"{doc['id']}) to fetch it again.")
+    blocks.append(TextContent(type="text", text=text))
+    return ToolResult(content=blocks, structured_content=summary)
 
 
 # ── Identity & tokens ─────────────────────────────────────────────────────────
@@ -93,11 +138,12 @@ def render_qr(url: str, format: str = "png", size: int = 12, style: Style = None
 
 # ── Create QR codes (per type) ────────────────────────────────────────────────
 
-def _create(type_: str, fields: dict, style: dict | None) -> dict:
+def _create(type_: str, fields: dict, style: dict | None) -> ToolResult:
     # POST /qrcodes reads style fields at the TOP LEVEL of the body.
     body = {"type": type_, **{k: v for k, v in fields.items() if v is not None}}
     body.update(client.clean_style(style))
-    return client.request("POST", "/qrcodes", json=body)
+    doc = client.request("POST", "/qrcodes", json=body)
+    return _qr_result(doc, "Created")
 
 
 @mcp.tool
@@ -107,7 +153,7 @@ def create_url_qrcode(
     static: bool = False,
     expires_in_days: int | None = None,
     style: Style = None,
-) -> dict:
+) -> ToolResult:
     """Create a Website-link QR code. static=True encodes the URL directly
     (no redirect, no scan tracking, not editable); default is a tracked, editable
     dynamic link."""
@@ -123,7 +169,7 @@ def create_whatsapp_qrcode(
     name: str | None = None,
     expires_in_days: int | None = None,
     style: Style = None,
-) -> dict:
+) -> ToolResult:
     """Create a WhatsApp QR code from a wa.me link (tracked dynamic link)."""
     return _create("whatsapp", {
         "target_url": target_url, "name": name, "expires_in_days": expires_in_days,
@@ -138,7 +184,7 @@ def create_wifi_qrcode(
     hidden: bool = False,
     name: str | None = None,
     style: Style = None,
-) -> dict:
+) -> ToolResult:
     """Create a Wi-Fi QR code (static; encodes credentials directly).
     auth is one of WPA, WPA3, WEP, nopass."""
     return _create("wifi", {
@@ -148,7 +194,7 @@ def create_wifi_qrcode(
 
 
 @mcp.tool
-def create_phone_qrcode(phone: str, name: str | None = None, style: Style = None) -> dict:
+def create_phone_qrcode(phone: str, name: str | None = None, style: Style = None) -> ToolResult:
     """Create a phone-number QR code (static; dials when scanned)."""
     return _create("phone", {"phone": phone, "name": name}, style)
 
@@ -160,7 +206,7 @@ def create_email_qrcode(
     body: str | None = None,
     name: str | None = None,
     style: Style = None,
-) -> dict:
+) -> ToolResult:
     """Create an email QR code (static; opens a prefilled email when scanned)."""
     return _create("email", {
         "email": email, "subject": subject, "body": body, "name": name,
@@ -176,7 +222,7 @@ def create_file_qrcode(
     name: str | None = None,
     expires_in_days: int | None = None,
     style: Style = None,
-) -> dict:
+) -> ToolResult:
     """Create a file/document QR code. Provide the file via file_path (local),
     file_url (downloaded by the server), or file_base64. Accepts images, PDF,
     Office, OpenDocument and text files up to 50 MB."""
@@ -185,7 +231,8 @@ def create_file_qrcode(
     data = {"type": "pdf", "name": name, "expires_in_days": expires_in_days}
     data.update(client.clean_style(style))
     files = {"pdf_file": (fname, content, "application/octet-stream")}
-    return client.request("POST", "/qrcodes", data=data, files=files)
+    doc = client.request("POST", "/qrcodes", data=data, files=files)
+    return _qr_result(doc, "Created")
 
 
 # ── Read / update / delete ────────────────────────────────────────────────────
@@ -204,13 +251,15 @@ def list_qrcodes(
         params["q"] = q
     if active is not None:
         params["active"] = "true" if active else "false"
-    return client.request("GET", "/qrcodes", params=params)
+    result = client.request("GET", "/qrcodes", params=params)
+    result["data"] = [present(d) for d in result.get("data", [])]
+    return result
 
 
 @mcp.tool
 def get_qrcode(id: int) -> dict:
-    """Get a single QR code by id."""
-    return client.request("GET", f"/qrcodes/{id}")
+    """Get a single QR code's details by id. Use get_qrcode_png to view the image."""
+    return present(client.request("GET", f"/qrcodes/{id}"))
 
 
 @mcp.tool
@@ -243,7 +292,7 @@ def update_qrcode(
     cleaned = client.clean_style(style)
     if cleaned:
         payload["style"] = cleaned  # PATCH nests style under "style"
-    return client.request("PATCH", f"/qrcodes/{id}", json=payload)
+    return present(client.request("PATCH", f"/qrcodes/{id}", json=payload))
 
 
 @mcp.tool
@@ -305,7 +354,7 @@ def replace_qrcode_file(
     fname, content = client.load_file(
         file_path=file_path, file_url=file_url, file_base64=file_base64, filename=filename)
     files = {"pdf_file": (fname, content, "application/octet-stream")}
-    return client.request("PUT", f"/qrcodes/{id}/file", files=files)
+    return present(client.request("PUT", f"/qrcodes/{id}/file", files=files))
 
 
 @mcp.tool
@@ -320,13 +369,13 @@ def set_qrcode_logo(
     fname, content = client.load_file(
         file_path=file_path, file_url=file_url, file_base64=file_base64, filename=filename)
     files = {"logo": (fname, content, "application/octet-stream")}
-    return client.request("PUT", f"/qrcodes/{id}/logo", files=files)
+    return present(client.request("PUT", f"/qrcodes/{id}/logo", files=files))
 
 
 @mcp.tool
 def remove_qrcode_logo(id: int) -> dict:
     """Remove a QR code's center logo."""
-    return client.request("DELETE", f"/qrcodes/{id}/logo")
+    return present(client.request("DELETE", f"/qrcodes/{id}/logo"))
 
 
 # ── Analytics & history ───────────────────────────────────────────────────────
