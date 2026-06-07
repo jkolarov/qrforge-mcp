@@ -13,6 +13,8 @@ from fastmcp.tools.tool import ToolResult
 from fastmcp.utilities.types import Image
 from mcp.types import TextContent
 from pydantic import Field
+from starlette.requests import Request
+from starlette.responses import JSONResponse
 
 from . import client
 
@@ -27,6 +29,12 @@ mcp = FastMCP(
         "vertical), fill_color, fill_color_2, back_color (hex like #000000)."
     ),
 )
+
+
+@mcp.custom_route("/health", methods=["GET"])
+async def health(_request: Request) -> JSONResponse:
+    """Unauthenticated liveness probe for uptime monitors (HTTP transport only)."""
+    return JSONResponse({"status": "ok"})
 
 Style = Annotated[dict | None, Field(
     default=None,
