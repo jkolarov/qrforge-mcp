@@ -1,0 +1,25 @@
+# Hosted QR Forge MCP server. Public traffic reaches it via the Cloudflare
+# tunnel ingress mcp.qrforge.work -> http://localhost:8001.
+services:
+  mcp-server:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: qr-mcp-server
+    ports:
+      - "8001:8001"
+    environment:
+      # The QR Forge API this server talks to. No token is stored here — each
+      # MCP request must carry its own Authorization: Bearer <token>.
+      - QRFORGE_API_URL=${QRFORGE_API_URL:-https://qrforge.work}
+      - MCP_HOST=0.0.0.0
+      - MCP_PORT=8001
+    restart: unless-stopped
+    healthcheck:
+      # Prove the server is listening (TCP connect). Avoids HTTP-status quirks of
+      # the MCP endpoint.
+      test: ["CMD", "python", "-c", "import socket; socket.create_connection(('localhost', 8001), 3).close()"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
