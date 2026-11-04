@@ -18,3 +18,6 @@ htmlcov/
 
 # CI workflow withheld until a workflow-scoped token is available
 .github/workflows/
+
+# graft's local graph cache — regenerable, not committed (run `graft build`).
+/graft/
