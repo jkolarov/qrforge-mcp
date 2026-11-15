@@ -1,0 +1,61 @@
+# Pull requests: the tests. Pushes to main: the tests, then the public image ghcr.io/jkolarov/qrforge-mcp:<commit>
+# (and :main). This repo is public, so it does not use the private shared deploy, and nothing here runs on a
+# self-hosted runner. The hosted server (mcp.qrforge.work) runs this image as a service of the private qr-website
+# app on the prod server, pinned to a commit in that repo's deploy/prod/compose.prod.yml. To put a new version
+# live, bump that pin there and run qr-website's Deploy.
+name: Build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - run: pip install ".[dev]"
+      - run: pytest -q
+
+  image:
+    needs: check
+    # Only pushes to this repo's main (and manual runs on main): never pull requests, so code from a fork never
+    # gets the package-write token.
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: |
+            ghcr.io/jkolarov/qrforge-mcp:${{ github.sha }}
+            ghcr.io/jkolarov/qrforge-mcp:main
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
