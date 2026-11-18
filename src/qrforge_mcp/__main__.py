@@ -22,7 +22,15 @@ def main() -> None:
     args = parser.parse_args()
 
     if args.http:
-        mcp.run(transport="http", host=args.host, port=args.port)
+        from starlette.middleware import Middleware
+
+        from .access_log import ASGIAccessLog
+
+        # One JSON line per request with the caller's address and country: the access log the hosted server
+        # shares with the other apps on its server (access-log/ in jkolarov/deploy). uvicorn's own is off.
+        mcp.run(transport="http", host=args.host, port=args.port,
+                middleware=[Middleware(ASGIAccessLog, name="qrforge-mcp")],
+                uvicorn_config={"access_log": False})
     else:
         mcp.run()
 
